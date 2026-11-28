@@ -101,6 +101,7 @@ func initializeVirtualRepo(dir, repoPath string, policy repositoryPolicy) error 
 	if err := os.Rename(staging, repoPath); err != nil {
 		return fmt.Errorf("publish virtual repository: %w", err)
 	}
+	fmt.Fprintf(out, "Created %s\n", policyPath)
 	return nil
 }
 
