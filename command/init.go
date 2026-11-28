@@ -1,176 +1,229 @@
 package command
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/huh"
 )
 
 func Initialize(flags []string, out io.Writer) error {
+	options := flag.NewFlagSet("singularity init", flag.ContinueOnError)
+	options.SetOutput(out)
+	advanced := options.Bool("advanced", false, "configure detailed repository governance")
+	if err := options.Parse(flags); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if options.NArg() > 0 {
+		return fmt.Errorf("unexpected argument for init: %q", options.Arg(0))
+	}
+
 	fmt.Fprintln(out, "Welcome to Singularity.")
 	fmt.Fprintln(out, "This wizard collects the settings for your repository's governance policy.")
 
-	answers := struct {
-		ProtectedBranch    string
-		AdditionalBranches []string
-		RequirePR          bool
-		Ownership          string
-		DomainPaths        string
-		TeamPaths          string
-		UnmanagedFiles     string
-		Permissions        string
-		BranchMappings     string
-		Enforcement        string
-	}{
-		ProtectedBranch: "main",
-		Ownership:       "domain",
-		UnmanagedFiles:  "reject",
-		Permissions:     "pattern",
-		Enforcement:     "block",
-	}
-
-	required := func(value string) error {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("enter a value to continue")
-		}
-		return nil
-	}
-
-	var history promptHistory
-	prompt := func(label string, field huh.Field, hidden ...func() bool) *huh.Group {
-		group := huh.NewGroup(field)
-		entry := answeredPrompt{label: label, field: field}
-		if len(hidden) > 0 {
-			entry.hidden = hidden[0]
-			group.WithHideFunc(entry.hidden)
-		}
-		history = append(history, entry)
-		return group
-	}
-
-	form := huh.NewForm(
-		prompt("Primary protected branch",
-			huh.NewInput().
-				Title("What is your primary protected branch?").
-				Value(&answers.ProtectedBranch).
-				Validate(required),
-		),
-		prompt("Additional protected branches",
-			huh.NewMultiSelect[string]().
-				Title("Protect additional branches?").
-				Description("Select any branches to protect or continue with no selections.").
-				Options(
-					huh.NewOption("release", "release"),
-					huh.NewOption("hotfix", "hotfix"),
-					huh.NewOption("production", "production"),
-				).
-				Value(&answers.AdditionalBranches),
-		),
-		prompt("Repository ownership",
-			huh.NewSelect[string]().
-				Title("How should repository ownership be organized?").
-				Options(
-					huh.NewOption("Domain-based", "domain"),
-					huh.NewOption("Team-based", "team"),
-					huh.NewOption("Open repository", "open"),
-				).
-				Value(&answers.Ownership),
-		),
-		prompt("Domain paths",
-			huh.NewText().
-				Title("Which domains own which paths?").
-				Description("Enter one domain per line, for example: billing = billing/**").
-				Value(&answers.DomainPaths).
-				Validate(required),
-			func() bool { return answers.Ownership != "domain" },
-		),
-		prompt("Team paths",
-			huh.NewText().
-				Title("Which teams own which paths?").
-				Description("Enter one team per line, for example: platform = infra/**").
-				Value(&answers.TeamPaths).
-				Validate(required),
-			func() bool { return answers.Ownership != "team" },
-		),
-		prompt("Unmanaged files",
-			huh.NewSelect[string]().
-				Title("What should happen when a file has no owner?").
-				Options(
-					huh.NewOption("Reject merge", "reject"),
-					huh.NewOption("Allow merge", "allow"),
-				).
-				Value(&answers.UnmanagedFiles),
-			func() bool { return answers.Ownership == "open" },
-		),
-		prompt("Branch permissions",
-			huh.NewSelect[string]().
-				Title("How should branches receive permissions?").
-				Options(
-					huh.NewOption("By branch pattern", "pattern"),
-					huh.NewOption("Allow any branch", "any"),
-				).
-				Value(&answers.Permissions),
-			func() bool { return answers.Ownership == "open" },
-		),
-		prompt("Branch mappings",
-			huh.NewText().
-				Title("Which owners can each branch pattern modify?").
-				Description("Enter one mapping per line, for example: feature/billing-* = billing").
-				Value(&answers.BranchMappings).
-				Validate(required),
-			func() bool { return answers.Ownership == "open" || answers.Permissions != "pattern" },
-		),
-		prompt("Enforcement",
-			huh.NewSelect[string]().
-				Title("How should Singularity enforce policies?").
-				Options(
-					huh.NewOption("Block merges", "block"),
-					huh.NewOption("Warn only", "warn"),
-				).
-				Value(&answers.Enforcement),
-		),
-		prompt("",
-			huh.NewNote().
-				Title("Review your policy settings").
-				DescriptionFunc(func() string {
-					branches := append([]string{answers.ProtectedBranch}, answers.AdditionalBranches...)
-					summary := fmt.Sprintf("Protected branches: %s\nRequire pull requests: %t\nOwnership: %s",
-						strings.Join(branches, ", "), answers.RequirePR, answers.Ownership)
-					switch answers.Ownership {
-					case "domain":
-						summary += "\nDomain paths:\n" + answers.DomainPaths
-					case "team":
-						summary += "\nTeam paths:\n" + answers.TeamPaths
-					}
-					if answers.Ownership != "open" {
-						summary += fmt.Sprintf("\nUnmanaged files: %s\nBranch Permissions: %s", answers.UnmanagedFiles, answers.Permissions)
-						if answers.Permissions == "pattern" {
-							summary += "\nBranch mappings:\n" + answers.BranchMappings
-						}
-					}
-					return summary + "\nEnforcement: " + answers.Enforcement
-				}, &answers).
-				Next(true),
-		),
-		prompt("Generate singularity.yaml",
-			huh.NewConfirm().
-				Title("Generate singularity.yaml?").
-				Description("This wizard currently only collects answers."),
-		),
-	).WithLayout(history).WithOutput(out)
-	if err := form.Run(); err != nil {
+	wizard := initWizard{out: out}
+	if err := wizard.configure(*advanced); err != nil {
 		return err
 	}
-	fmt.Fprint(out, history.answersBefore(nil))
+
+	title := "Proceed?"
+	if *advanced {
+		title = "Generate configuration?"
+	}
+	proceed := true
+	review := answeredPrompt{
+		label: title,
+		field: huh.NewConfirm().Title(title).
+			Description("Review your governance settings above. Managed physical branches are always enabled.").
+			Value(&proceed),
+	}
+	if err := wizard.run(review); err != nil {
+		return err
+	}
+
+	fmt.Fprint(out, wizard.history.answersBefore(nil))
+	if proceed {
+		fmt.Fprintln(out, "Governance settings collected.")
+	}
 	return nil
 }
 
+type initWizard struct {
+	out     io.Writer
+	history promptHistory
+}
+
+func (w *initWizard) configure(advanced bool) error {
+	root := "main"
+	rootPrompt := requiredInput("What is the repository root branch?", &root)
+	if !advanced {
+		var repositoryType string
+		if err := w.run(rootPrompt, choice("What type of repository is this?", &repositoryType,
+			"Monolith", "Monorepo", "Microservices", "Library")); err != nil {
+			return err
+		}
+		if err := w.domains(false); err != nil {
+			return err
+		}
+		consolidate := true
+		var crossDomain string
+		return w.run(
+			confirmation("Require feature branches to merge through their domain branch?", &consolidate),
+			choice("How should cross-domain changes be handled?", &crossDomain, "Create Handoff", "Reject Merge"),
+		)
+	}
+
+	var additional []string
+	if err := w.run(
+		rootPrompt,
+		answeredPrompt{
+			label: "Additional protected branches?",
+			field: huh.NewMultiSelect[string]().
+				Title("Additional protected branches?").
+				Description("Select any additional branches or continue with no selections.").
+				Options(huh.NewOptions("release", "hotfix", "production")...).
+				Value(&additional),
+		},
+	); err != nil {
+		return err
+	}
+	if err := w.domains(true); err != nil {
+		return err
+	}
+	if err := w.handoffs(); err != nil {
+		return err
+	}
+	dependencies := false
+	return w.run(confirmation("Enable dependency governance?", &dependencies))
+}
+
+func (w *initWizard) domains(advanced bool) error {
+	names := make(map[string]bool)
+	for {
+		var name string
+		namePrompt := answeredPrompt{
+			label: "Domain name",
+			field: huh.NewInput().Title("Domain name").Value(&name).Validate(func(value string) error {
+				value = strings.TrimSpace(value)
+				if err := requireValue(value); err != nil {
+					return err
+				}
+				if names[value] {
+					return fmt.Errorf("domain %q already exists", value)
+				}
+				return nil
+			}),
+		}
+		if err := w.run(namePrompt); err != nil {
+			return err
+		}
+		name = strings.TrimSpace(name)
+		paths := name + "/**"
+		pathPrompt := answeredPrompt{
+			label: "Owned paths",
+			field: huh.NewInput().Title("Owned paths").
+				Description("Press Enter to accept the suggested path, or edit it. Separate multiple paths with commas.").
+				Value(&paths).Validate(requireValue),
+		}
+		prompts := []answeredPrompt{pathPrompt}
+		consolidate, directMerge := true, false
+		if advanced {
+			prompts = append(prompts,
+				confirmation("Must child branches merge through this domain before reaching the repository root?", &consolidate),
+				confirmation("Allow direct merges to the repository root branch?", &directMerge),
+			)
+		}
+		if err := w.run(prompts...); err != nil {
+			return err
+		}
+		names[name] = true
+
+		var trust string
+		var settings []answeredPrompt
+		if advanced {
+			settings = append(settings,
+				answeredPrompt{
+					label: "Which domains may submit handoffs into this domain without additional approval?",
+					field: huh.NewInput().Title("Which domains may submit handoffs into this domain without additional approval?").
+						Description("Separate domain names with commas. Leave blank for none.").Value(&trust),
+				},
+			)
+		}
+		more := false
+		settings = append(settings, confirmation("Create another domain?", &more))
+		if err := w.run(settings...); err != nil || !more {
+			return err
+		}
+	}
+}
+
+func (w *initWizard) handoffs() error {
+	var strategy string
+	if err := w.run(choice("Cross-domain strategy?", &strategy, "Handoff", "Reject Merge")); err != nil {
+		return err
+	}
+	if strategy != "Handoff" {
+		return nil
+	}
+	approval, expire := true, true
+	if err := w.run(
+		confirmation("Require approval before handoff merge?", &approval),
+		confirmation("Expire handoffs automatically?", &expire),
+	); err != nil || !expire {
+		return err
+	}
+	days := "30"
+	return w.run(answeredPrompt{
+		label: "Handoff expiration in days",
+		field: huh.NewInput().Title("Handoff expiration in days?").Value(&days).Validate(func(value string) error {
+			count, err := strconv.Atoi(strings.TrimSpace(value))
+			if err != nil || count <= 0 {
+				return fmt.Errorf("enter a positive whole number")
+			}
+			return nil
+		}),
+	})
+}
+
+func (w *initWizard) run(prompts ...answeredPrompt) error {
+	groups := make([]*huh.Group, 0, len(prompts))
+	for _, prompt := range prompts {
+		groups = append(groups, huh.NewGroup(prompt.field))
+	}
+	w.history = append(w.history, prompts...)
+	return huh.NewForm(groups...).WithLayout(w.history).WithOutput(w.out).Run()
+}
+
+func requiredInput(title string, value *string) answeredPrompt {
+	return answeredPrompt{label: title, field: huh.NewInput().Title(title).Value(value).Validate(requireValue)}
+}
+
+func requireValue(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("enter a value to continue")
+	}
+	return nil
+}
+
+func confirmation(title string, value *bool) answeredPrompt {
+	return answeredPrompt{label: title, field: huh.NewConfirm().Title(title).Value(value)}
+}
+
+func choice(title string, value *string, choices ...string) answeredPrompt {
+	return answeredPrompt{label: title, field: huh.NewSelect[string]().Title(title).
+		Options(huh.NewOptions(choices...)...).Value(value)}
+}
+
 type answeredPrompt struct {
-	label  string
-	field  huh.Field
-	hidden func() bool
+	label string
+	field huh.Field
 }
 
 type promptHistory []answeredPrompt
@@ -188,9 +241,6 @@ func (history promptHistory) answersBefore(active huh.Field) string {
 	for _, prompt := range history {
 		if prompt.field == active {
 			break
-		}
-		if prompt.label == "" || (prompt.hidden != nil && prompt.hidden()) {
-			continue
 		}
 		var value string
 		switch answer := prompt.field.GetValue().(type) {
