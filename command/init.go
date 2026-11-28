@@ -5,9 +5,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
+	virtualgit "github.com/Programming-ark/singularity/git"
 	"github.com/charmbracelet/huh"
 )
 
@@ -52,10 +57,50 @@ func Initialize(flags []string, out io.Writer) error {
 	if !proceed {
 		return nil
 	}
-	if err := writePolicy(policyPath, wizard.policy); err != nil {
+	if err := initializeRepository(policyPath, wizard.policy); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Created %s\n", policyPath)
+	fmt.Fprintf(out, "Created %s and initialized the managed Git repository\n", policyPath)
+	return nil
+}
+
+func initializeRepository(configPath string, policy repositoryPolicy) error {
+	dir := filepath.Dir(configPath)
+	repoPath := filepath.Join(dir, "repo")
+	if _, err := os.Lstat(repoPath); err == nil {
+		return fmt.Errorf("virtual repository path already exists at %s", repoPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("check virtual repository path: %w", err)
+	}
+	if err := writePolicy(configPath, policy); err != nil {
+		return err
+	}
+	if err := initializeVirtualRepo(dir, repoPath, policy); err != nil {
+		return errors.Join(err, os.Remove(configPath))
+	}
+	return nil
+}
+
+func initializeVirtualRepo(dir, repoPath string, policy repositoryPolicy) error {
+	staging, err := os.MkdirTemp(dir, "repo-init-")
+	if err != nil {
+		return fmt.Errorf("stage virtual repository: %w", err)
+	}
+	defer os.RemoveAll(staging)
+
+	repo, commit, err := virtualgit.InitVirtualRepo(staging, strings.TrimSpace(policy.RootBranch))
+	if err != nil {
+		return err
+	}
+	branches := append(slices.Sorted(maps.Keys(policy.Domains)), policy.Protected...)
+	for _, name := range branches {
+		if err := virtualgit.CreateManagedBranch(repo, name, commit); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(staging, repoPath); err != nil {
+		return fmt.Errorf("publish virtual repository: %w", err)
+	}
 	return nil
 }
 
