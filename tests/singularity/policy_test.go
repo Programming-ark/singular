@@ -1,4 +1,4 @@
-package command
+package singularity_test
 
 import (
 	"bytes"
@@ -8,30 +8,31 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/Programming-ark/singularity/singularity"
 	"go.yaml.in/yaml/v3"
 )
 
 func TestWritePolicy(t *testing.T) {
-	path := filepath.Join(t.TempDir(), policyPath)
-	policy := repositoryPolicy{
+	path := filepath.Join(t.TempDir(), singularity.PolicyPath)
+	policy := singularity.RepositoryPolicy{
 		RootBranch:     "main",
 		RepositoryType: "Monorepo",
 		Protected:      []string{"release"},
-		Domains: map[string]domainPolicy{
-			"users": {Paths: splitList(" users/**, shared/users/**, , users/** ")},
+		Domains: map[string]singularity.DomainPolicy{
+			"users": {Paths: []string{"users/**", "shared/users/**"}},
 		},
-		Handoff: &handoffPolicy{ApprovalRequired: true, ExpirationDays: 30},
+		Handoff: &singularity.HandoffPolicy{ApprovalRequired: true, ExpirationDays: 30},
 	}
 	policy.CrossDomain.Strategy = "handoff"
 	policy.DependencyGovernance.Enabled = true
-	if err := writePolicy(path, policy); err != nil {
+	if err := singularity.WritePolicy(path, policy); err != nil {
 		t.Fatal(err)
 	}
 	original, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var decoded repositoryPolicy
+	var decoded singularity.RepositoryPolicy
 	if err := yaml.Unmarshal(original, &decoded); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +46,7 @@ func TestWritePolicy(t *testing.T) {
 	}
 
 	policy.RootBranch = "different"
-	if err := writePolicy(path, policy); !errors.Is(err, os.ErrExist) {
+	if err := singularity.WritePolicy(path, policy); !errors.Is(err, os.ErrExist) {
 		t.Fatalf("second write returned %v, want os.ErrExist", err)
 	}
 	after, err := os.ReadFile(path)

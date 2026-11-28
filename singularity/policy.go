@@ -1,56 +1,45 @@
-package command
+package singularity
 
 import (
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
+
 	"strings"
 
 	"go.yaml.in/yaml/v3"
 )
 
-const policyPath = ".singularity/policy.yaml"
+const PolicyPath = ".singularity/policy.yaml"
 
-type repositoryPolicy struct {
+type RepositoryPolicy struct {
 	RootBranch     string                  `yaml:"root_branch"`
 	RepositoryType string                  `yaml:"repository_type,omitempty"`
 	Protected      []string                `yaml:"protected"`
-	Domains        map[string]domainPolicy `yaml:"domains"`
+	Domains        map[string]DomainPolicy `yaml:"domains"`
 	CrossDomain    struct {
 		Strategy string `yaml:"strategy"`
 	} `yaml:"cross_domain"`
-	Handoff              *handoffPolicy `yaml:"handoff,omitempty"`
+	Handoff              *HandoffPolicy `yaml:"handoff,omitempty"`
 	DependencyGovernance struct {
 		Enabled bool `yaml:"enabled"`
 	} `yaml:"dependency_governance"`
 }
 
-type domainPolicy struct {
+type DomainPolicy struct {
 	Paths                 []string `yaml:"paths"`
 	ConsolidationRequired bool     `yaml:"consolidation_required"`
 	DirectMerge           bool     `yaml:"direct_merge"`
 	TrustedDomains        []string `yaml:"trusted_domains,omitempty"`
 }
 
-type handoffPolicy struct {
+type HandoffPolicy struct {
 	ApprovalRequired bool `yaml:"approval_required"`
 	ExpirationDays   int  `yaml:"expiration_days,omitempty"`
 }
 
-func splitList(value string) []string {
-	var items []string
-	for _, item := range strings.Split(value, ",") {
-		item = strings.TrimSpace(item)
-		if item != "" && !slices.Contains(items, item) {
-			items = append(items, item)
-		}
-	}
-	return items
-}
-
-func writePolicy(path string, policy repositoryPolicy) error {
+func WritePolicy(path string, policy RepositoryPolicy) error {
 	policy.RootBranch = strings.TrimSpace(policy.RootBranch)
 	policy.RepositoryType = strings.ToLower(policy.RepositoryType)
 	policy.Protected = append([]string{policy.RootBranch}, policy.Protected...)

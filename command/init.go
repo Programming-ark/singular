@@ -5,14 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"maps"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 
-	virtualgit "github.com/Programming-ark/singularity/git"
+	"github.com/Programming-ark/singularity/singularity"
 	"github.com/charmbracelet/huh"
 )
 
@@ -57,64 +54,23 @@ func Initialize(flags []string, out io.Writer) error {
 	if !proceed {
 		return nil
 	}
-	if err := initializeRepository(policyPath, wizard.policy); err != nil {
+	if err := singularity.InitializeRepository(singularity.PolicyPath, wizard.policy); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Created %s and initialized the managed Git repository\n", policyPath)
-	return nil
-}
-
-func initializeRepository(configPath string, policy repositoryPolicy) error {
-	dir := filepath.Dir(configPath)
-	repoPath := filepath.Join(dir, "repo")
-	if _, err := os.Lstat(repoPath); err == nil {
-		return fmt.Errorf("virtual repository path already exists at %s", repoPath)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("check virtual repository path: %w", err)
-	}
-	if err := writePolicy(configPath, policy); err != nil {
-		return err
-	}
-	if err := initializeVirtualRepo(dir, repoPath, policy); err != nil {
-		return errors.Join(err, os.Remove(configPath))
-	}
-	return nil
-}
-
-func initializeVirtualRepo(dir, repoPath string, policy repositoryPolicy) error {
-	staging, err := os.MkdirTemp(dir, "repo-init-")
-	if err != nil {
-		return fmt.Errorf("stage virtual repository: %w", err)
-	}
-	defer os.RemoveAll(staging)
-
-	repo, commit, err := virtualgit.InitVirtualRepo(staging, strings.TrimSpace(policy.RootBranch))
-	if err != nil {
-		return err
-	}
-	branches := append(slices.Sorted(maps.Keys(policy.Domains)), policy.Protected...)
-	for _, name := range branches {
-		if err := virtualgit.CreateManagedBranch(repo, name, commit); err != nil {
-			return err
-		}
-	}
-	if err := os.Rename(staging, repoPath); err != nil {
-		return fmt.Errorf("publish virtual repository: %w", err)
-	}
-	fmt.Fprintf(out, "Created %s\n", policyPath)
+	fmt.Fprintf(out, "Created %s and initialized the managed Git repository\n", singularity.PolicyPath)
 	return nil
 }
 
 type initWizard struct {
 	out     io.Writer
 	history promptHistory
-	policy  repositoryPolicy
+	policy  singularity.RepositoryPolicy
 }
 
 func (w *initWizard) configure(advanced bool) error {
 	policy := &w.policy
 	policy.RootBranch = "main"
-	policy.Domains = make(map[string]domainPolicy)
+	policy.Domains = make(map[string]singularity.DomainPolicy)
 	rootPrompt := requiredInput("What is the repository root branch?", &policy.RootBranch)
 	if !advanced {
 		if err := w.run(rootPrompt, choice("What type of repository is this?", &policy.RepositoryType,
@@ -136,7 +92,7 @@ func (w *initWizard) configure(advanced bool) error {
 			policy.Domains[name] = domain
 		}
 		if policy.CrossDomain.Strategy == "handoff" {
-			policy.Handoff = &handoffPolicy{ApprovalRequired: true}
+			policy.Handoff = &singularity.HandoffPolicy{ApprovalRequired: true}
 		}
 		return nil
 	}
@@ -228,7 +184,7 @@ func (w *initWizard) domains(advanced bool) error {
 		if err := w.run(settings...); err != nil {
 			return err
 		}
-		w.policy.Domains[name] = domainPolicy{
+		w.policy.Domains[name] = singularity.DomainPolicy{
 			Paths:                 splitList(paths),
 			ConsolidationRequired: consolidate,
 			DirectMerge:           directMerge,
@@ -248,7 +204,7 @@ func (w *initWizard) handoffs() error {
 	if *strategy != "handoff" {
 		return nil
 	}
-	handoff := &handoffPolicy{ApprovalRequired: true}
+	handoff := &singularity.HandoffPolicy{ApprovalRequired: true}
 	w.policy.Handoff = handoff
 	expire := true
 	if err := w.run(
@@ -351,4 +307,15 @@ func (history promptHistory) answersBefore(active huh.Field) string {
 		transcript.WriteByte('\n')
 	}
 	return transcript.String()
+}
+
+func splitList(value string) []string {
+	var items []string
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" && !slices.Contains(items, item) {
+			items = append(items, item)
+		}
+	}
+	return items
 }

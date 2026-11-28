@@ -1,4 +1,4 @@
-package command
+package singularity_test
 
 import (
 	"errors"
@@ -7,17 +7,18 @@ import (
 	"testing"
 
 	virtualgit "github.com/Programming-ark/singularity/git"
+	"github.com/Programming-ark/singularity/singularity"
 	gogit "github.com/go-git/go-git/v5"
 )
 
 func TestInitializeRepository(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), policyPath)
-	policy := repositoryPolicy{
+	configPath := filepath.Join(t.TempDir(), singularity.PolicyPath)
+	policy := singularity.RepositoryPolicy{
 		RootBranch: "main",
-		Domains:    map[string]domainPolicy{"users": {Paths: []string{"users/**"}}},
+		Domains:    map[string]singularity.DomainPolicy{"users": {Paths: []string{"users/**"}}},
 		Protected:  []string{"release"},
 	}
-	if err := initializeRepository(configPath, policy); err != nil {
+	if err := singularity.InitializeRepository(configPath, policy); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(configPath); err != nil {
@@ -62,9 +63,9 @@ func TestInitializeRepository(t *testing.T) {
 }
 
 func TestInitializeRepositoryRollsBackInvalidBranch(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), policyPath)
-	policy := repositoryPolicy{RootBranch: "main", Protected: []string{"invalid branch"}}
-	if err := initializeRepository(configPath, policy); err == nil {
+	configPath := filepath.Join(t.TempDir(), singularity.PolicyPath)
+	policy := singularity.RepositoryPolicy{RootBranch: "main", Protected: []string{"invalid branch"}}
+	if err := singularity.InitializeRepository(configPath, policy); err == nil {
 		t.Fatal("expected invalid branch to fail initialization")
 	}
 	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
