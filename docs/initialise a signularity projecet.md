@@ -155,7 +155,10 @@ service, component, or team. For example, entering `users` prefills **Owned path
 with `users/**`. Press Enter to accept it or edit the field to enter comma-separated
 path patterns. Choose **Create another domain?** to define additional boundaries.
 
-The current wizard collects answers in the terminal and writes no configuration files.
+After confirmation, the wizard writes `.singularity/policy.yaml` in the current
+directory. It preserves any existing policy file. The root branch is always
+included in the protected branch list. In standard setup, choosing **Create
+Handoff** requires approval and leaves handoffs active indefinitely.
 
 Advanced initialization asks whether to enable dependency governance, which
 controls which domains may depend on each other. Governance event recording is

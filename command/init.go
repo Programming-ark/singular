@@ -49,23 +49,29 @@ func Initialize(flags []string, out io.Writer) error {
 	}
 
 	fmt.Fprint(out, wizard.history.answersBefore(nil))
-	if proceed {
-		fmt.Fprintln(out, "Governance settings collected.")
+	if !proceed {
+		return nil
 	}
+	if err := writePolicy(policyPath, wizard.policy); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Created %s\n", policyPath)
 	return nil
 }
 
 type initWizard struct {
 	out     io.Writer
 	history promptHistory
+	policy  repositoryPolicy
 }
 
 func (w *initWizard) configure(advanced bool) error {
-	root := "main"
-	rootPrompt := requiredInput("What is the repository root branch?", &root)
+	policy := &w.policy
+	policy.RootBranch = "main"
+	policy.Domains = make(map[string]domainPolicy)
+	rootPrompt := requiredInput("What is the repository root branch?", &policy.RootBranch)
 	if !advanced {
-		var repositoryType string
-		if err := w.run(rootPrompt, choice("What type of repository is this?", &repositoryType,
+		if err := w.run(rootPrompt, choice("What type of repository is this?", &policy.RepositoryType,
 			"Monolith", "Monorepo", "Microservices", "Library")); err != nil {
 			return err
 		}
@@ -73,11 +79,20 @@ func (w *initWizard) configure(advanced bool) error {
 			return err
 		}
 		consolidate := true
-		var crossDomain string
-		return w.run(
+		if err := w.run(
 			confirmation("Require feature branches to merge through their domain branch?", &consolidate),
-			choice("How should cross-domain changes be handled?", &crossDomain, "Create Handoff", "Reject Merge"),
-		)
+			crossDomainChoice("How should cross-domain changes be handled?", "Create Handoff", &policy.CrossDomain.Strategy),
+		); err != nil {
+			return err
+		}
+		for name, domain := range policy.Domains {
+			domain.ConsolidationRequired = consolidate
+			policy.Domains[name] = domain
+		}
+		if policy.CrossDomain.Strategy == "handoff" {
+			policy.Handoff = &handoffPolicy{ApprovalRequired: true}
+		}
+		return nil
 	}
 
 	var additional []string
@@ -94,18 +109,21 @@ func (w *initWizard) configure(advanced bool) error {
 	); err != nil {
 		return err
 	}
+	for _, branch := range additional {
+		if branch != strings.TrimSpace(policy.RootBranch) {
+			policy.Protected = append(policy.Protected, branch)
+		}
+	}
 	if err := w.domains(true); err != nil {
 		return err
 	}
 	if err := w.handoffs(); err != nil {
 		return err
 	}
-	dependencies := false
-	return w.run(confirmation("Enable dependency governance?", &dependencies))
+	return w.run(confirmation("Enable dependency governance?", &policy.DependencyGovernance.Enabled))
 }
 
 func (w *initWizard) domains(advanced bool) error {
-	names := make(map[string]bool)
 	for {
 		var name string
 		namePrompt := answeredPrompt{
@@ -115,7 +133,7 @@ func (w *initWizard) domains(advanced bool) error {
 				if err := requireValue(value); err != nil {
 					return err
 				}
-				if names[value] {
+				if _, exists := w.policy.Domains[value]; exists {
 					return fmt.Errorf("domain %q already exists", value)
 				}
 				return nil
@@ -130,7 +148,12 @@ func (w *initWizard) domains(advanced bool) error {
 			label: "Owned paths",
 			field: huh.NewInput().Title("Owned paths").
 				Description("Press Enter to accept the suggested path, or edit it. Separate multiple paths with commas.").
-				Value(&paths).Validate(requireValue),
+				Value(&paths).Validate(func(value string) error {
+				if len(splitList(value)) == 0 {
+					return fmt.Errorf("enter at least one owned path")
+				}
+				return nil
+			}),
 		}
 		prompts := []answeredPrompt{pathPrompt}
 		consolidate, directMerge := true, false
@@ -143,8 +166,6 @@ func (w *initWizard) domains(advanced bool) error {
 		if err := w.run(prompts...); err != nil {
 			return err
 		}
-		names[name] = true
-
 		var trust string
 		var settings []answeredPrompt
 		if advanced {
@@ -158,29 +179,40 @@ func (w *initWizard) domains(advanced bool) error {
 		}
 		more := false
 		settings = append(settings, confirmation("Create another domain?", &more))
-		if err := w.run(settings...); err != nil || !more {
+		if err := w.run(settings...); err != nil {
 			return err
+		}
+		w.policy.Domains[name] = domainPolicy{
+			Paths:                 splitList(paths),
+			ConsolidationRequired: consolidate,
+			DirectMerge:           directMerge,
+			TrustedDomains:        splitList(trust),
+		}
+		if !more {
+			return nil
 		}
 	}
 }
 
 func (w *initWizard) handoffs() error {
-	var strategy string
-	if err := w.run(choice("Cross-domain strategy?", &strategy, "Handoff", "Reject Merge")); err != nil {
+	strategy := &w.policy.CrossDomain.Strategy
+	if err := w.run(crossDomainChoice("Cross-domain strategy?", "Handoff", strategy)); err != nil {
 		return err
 	}
-	if strategy != "Handoff" {
+	if *strategy != "handoff" {
 		return nil
 	}
-	approval, expire := true, true
+	handoff := &handoffPolicy{ApprovalRequired: true}
+	w.policy.Handoff = handoff
+	expire := true
 	if err := w.run(
-		confirmation("Require approval before handoff merge?", &approval),
+		confirmation("Require approval before handoff merge?", &handoff.ApprovalRequired),
 		confirmation("Expire handoffs automatically?", &expire),
 	); err != nil || !expire {
 		return err
 	}
 	days := "30"
-	return w.run(answeredPrompt{
+	if err := w.run(answeredPrompt{
 		label: "Handoff expiration in days",
 		field: huh.NewInput().Title("Handoff expiration in days?").Value(&days).Validate(func(value string) error {
 			count, err := strconv.Atoi(strings.TrimSpace(value))
@@ -189,7 +221,16 @@ func (w *initWizard) handoffs() error {
 			}
 			return nil
 		}),
-	})
+	}); err != nil {
+		return err
+	}
+	handoff.ExpirationDays, _ = strconv.Atoi(strings.TrimSpace(days))
+	return nil
+}
+
+func crossDomainChoice(title, handoffLabel string, value *string) answeredPrompt {
+	return answeredPrompt{label: title, field: huh.NewSelect[string]().Title(title).
+		Options(huh.NewOption(handoffLabel, "handoff"), huh.NewOption("Reject Merge", "reject_merge")).Value(value)}
 }
 
 func (w *initWizard) run(prompts ...answeredPrompt) error {
