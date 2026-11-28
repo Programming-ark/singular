@@ -156,7 +156,10 @@ with `users/**`. Press Enter to accept it or edit the field to enter comma-separ
 path patterns. Choose **Create another domain?** to define additional boundaries.
 
 After confirmation, the wizard writes `.singularity/policy.yaml` in the current
-directory. It preserves any existing policy file. The root branch is always
+directory. It then initializes the hidden Git repository at
+`.singularity/repo/.git` with an empty commit and creates managed branches for
+the root branch, each domain, and additional protected branches. It preserves
+any existing policy file or managed repository. The root branch is always
 included in the protected branch list. In standard setup, choosing **Create
 Handoff** requires approval and leaves handoffs active indefinitely.
 
